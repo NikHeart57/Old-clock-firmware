@@ -1,0 +1,335 @@
+#define F_CPU 7372800
+
+#include <avr/io.h>
+#include <util/delay.h>     // Библиотека задежек _delay_ms(10)
+#include <avr/interrupt.h>  // Библиотека векторов прерываний
+#include <stdio.h>          // Библиотека rand
+#include <stdlib.h>         // Библиотека rand
+
+unsigned char Mode = 1;
+unsigned char Setting;
+
+unsigned char DisconnectorPA0;
+unsigned char DisconnectorHeatPA0;
+unsigned char HeatPA0;
+unsigned char DisconnectorPA1;
+unsigned char DisconnectorHeatPA1;
+unsigned char HeatPA1;;
+unsigned char DisconnectorPA2;
+unsigned char DisconnectorHeatPA2;
+unsigned char HeatPA2;
+
+unsigned char TimeCounter;
+unsigned char TimeParity;
+unsigned char TimeCurrent[3] = {0, 0, 0};              // hour, min, sec                             // Число элементов - три [3],   но номера элементов 0, 1, 2
+unsigned char TimeDisplay[6] = {0, 0, 0, 0, 0, 0};     // hour_1, hour_0, min_1, min_0, sec_1, sec_0     // Число элементов - шесть [6], но номера элементов 0, 1, ... 6
+unsigned char TimeSetting[3] = {0, 1, 2};              // hour, min, sec  
+
+
+void setup()
+{
+	// Настройка входа(0) выхода(1)
+	DDRA  |= (0 << PA0)|(0 << PA1)|(0 << PA2);                        // Кнопки
+	PORTA |= (1 << PA0)|(1 << PA1)|(1 << PA2);
+	DDRB  |= (1 << PB0)|(1 << PB1)|(1 << PB2)|(1 << PB3)|(1 << PB4);  // PB0-PB4 - Оптопары
+	DDRD  |= (1 << PD0)|(1 << PD1)|(1 << PD2)|(1 << PD3)|(1 << PD4);  // PD0-PD3 - Дешифратор;  PD4 - OC1B PWM
+	DDRC  |= (1 << PC0)|(1 << PC1)|(1 << PC2)|(1 << PC3)|(1 << PC4)|(1 << PC5)|(1 << PC6)|(1 << PC7);
+	DDRD  |= (1 << PD7);
+	
+	// Настойка таймера 0 (Часы)
+	sei();
+	TCCR0 |= (0 << FOC0) |(1  << WGM01)|(0 << WGM00)|(0 << COM01)|(0 << COM00)|(1 << CS02)|(0 << CS01)|(1 << CS00); // WGM = 10 - CTC mode / COM = 00 - пин откл / CS = 101 - Прескелер 1024
+	TIMSK |= (1 << OCIE0)|(0 << TOIE0); // OCIE0 = 1 - разрешает вызов прерывания TIMER0_COMP_vect
+	OCR0 = 239; // Число прерывания
+	
+	// Настройа таймера 1 (PWM)
+	sei();
+	TCCR1A |= (0 << COM1A1)|(0 << COM1A0)|(1 << COM1B1)|(0 << COM1B0)|(0 << FOC1A)|(0 << FOC1B)|(0 << WGM11)|(0 << WGM10);
+	TCCR1B |= (0 << ICNC1) |(0 << ICES1) |(1 << WGM13) |(0 << WGM12) |(0 << CS12) |(0 << CS11) |(1 << CS10);
+	ICR1 = 75;  // Верхнее значение, до которого идет счет - 75
+	OCR1B = 73; // Регистр сравнения, при совпадении с которым меняется состояние вывода OC1B - 73
+}
+
+void Mode0()    // Индикация
+{
+	PORTC = TimeCurrent[2];
+}
+
+void Mode1()    // Настройки
+{
+	PORTC = TimeSetting[2];
+}
+
+void ButtonPA0 ()
+{
+	// Кнопка PA0
+	if (!(PINA & (1 << PINA0)))        		    	  	  	 // Кнопка нажата
+	{
+		if (HeatPA0 < 200)                		  	  	   	 // Паралельно при нажатии начинается нагрев кнопки
+		{ 
+			HeatPA0++;
+			_delay_ms(5);
+		}	
+				
+		if (HeatPA0 == 200 && DisconnectorHeatPA0 == 0) 	 // Кнопка нагрелась
+		{
+			DisconnectorHeatPA0 = 20;                        // Дисконнектор горячей кнопки
+			
+			// Код горячей кнопки
+			Mode++;
+			Setting = 0;
+			TimeSetting[0] = TimeCurrent[0];
+			TimeSetting[1] = TimeCurrent[1];
+			TimeSetting[2] = TimeCurrent[2];
+			
+			if (Mode > 1)
+			{
+				Mode = 0;
+				Setting = 0;
+				TimeCurrent[0] = TimeSetting[0];
+				TimeCurrent[1] = TimeSetting[1];
+				TimeCurrent[2] = TimeSetting[2];
+			}
+
+		}
+		
+		if (DisconnectorPA0 == 0)
+		{
+			DisconnectorPA0 = 20;                            // Дисконнектор холодной кнопки
+	   	    // Код холодной кнопки
+			Setting++;
+			if (Setting > 2)
+			{
+				Setting = 0;
+			}
+		}
+	}	
+	// Кнопка отпущена
+	else
+	{
+		if (DisconnectorPA0 > 0)
+		{
+			_delay_ms(1);
+			DisconnectorPA0--;
+			HeatPA0 = 0;
+		}
+		
+		if (DisconnectorHeatPA0 > 0)
+		{
+			_delay_ms(1);
+			DisconnectorHeatPA0--;
+			HeatPA0 = 0;	
+		}
+	}	
+}
+
+
+void ButtonPA1 ()
+{
+	// Кнопка PA1
+	if (!(PINA & (1 << PINA1)))        		    	  	  	 // Кнопка нажата
+	{
+		if (HeatPA1 < 200)                		  	  	   	 // Паралельно при нажатии начинается нагрев кнопки
+		{
+			HeatPA1++;
+			_delay_ms(5);
+		}
+		
+		if (HeatPA1 == 200 && DisconnectorHeatPA1 == 0) 	 // Кнопка нагрелась
+		{
+			DisconnectorHeatPA1 = 20;                        // Дисконнектор горячей кнопки
+			
+			// Код горячей кнопки Mode = 0
+			if (Mode == 0)
+			{								
+			}
+			
+			// Код горячей кнопки Mode = 1
+			if (Mode == 1)
+			{				
+			}
+
+		}
+		
+		if (DisconnectorPA1 == 0)
+		{
+			DisconnectorPA1 = 20;                            // Дисконнектор холодной кнопки	
+			// Код холодной кнопки Mode = 0                  // Mode = 0 - Индикация
+			if (Mode == 0)
+			{
+			}
+			
+			// Код холодной кнопки Mode = 1                  // Mode = 1 - Настройки
+			if (Mode == 1 && Setting == 0)                   // Декремент часов
+			{
+				TimeSetting[0]--;
+				
+				if (TimeSetting[0] > 23)
+				{
+					TimeSetting[0] = 23;
+				}
+				
+			}
+			
+			if (Mode == 1 && Setting == 1)                    // Декремент минут
+			{
+				TimeSetting[1]--;
+				
+				if (TimeSetting[1] > 59)
+				{
+					TimeSetting[1] = 59;
+				}
+			}
+			
+			if (Mode == 1 && Setting == 2)                     // Декремент секунд
+			{
+				TimeSetting[2]--;
+				
+				if (TimeSetting[2] > 59)
+				{
+					TimeSetting[2] = 59;
+				}
+			}			
+		}
+	}
+	// Кнопка отпущена
+	else
+	{
+		if (DisconnectorPA1 > 0)
+		{
+			_delay_ms(1);
+			DisconnectorPA1--;
+			HeatPA1 = 0;
+		}
+		
+		if (DisconnectorHeatPA1 > 0)
+		{
+			_delay_ms(1);
+			DisconnectorHeatPA1--;
+			HeatPA1 = 0;
+		}
+	}
+}
+
+
+void ButtonPA2 ()
+{
+	// Кнопка PA2
+	if (!(PINA & (1 << PINA2)))
+	{
+		if (DisconnectorPA2 == 0)
+		{
+			DisconnectorPA2 = 10;
+			// Код
+			
+
+			// Конец кода
+		}
+	}
+	else
+	{
+		if (DisconnectorPA2 > 0)
+		{
+			DisconnectorPA2--;
+		}
+	}
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+int main(void)
+{
+	setup();
+	
+	while (1)
+	{	
+		_delay_ms(2);
+		
+		ButtonPA0();
+		ButtonPA1();
+		ButtonPA2();
+		
+		switch(Mode)
+		{
+			case 0:
+				Mode0();
+				break;
+			case 1:
+				Mode1();
+				break;				
+		}
+		
+		PORTD = Mode << 7;
+		
+	}
+}
+
+
+
+
+
+
+ISR(TIMER0_COMP_vect) // Может сделать флаги просто и все,
+{
+	unsigned char i;
+	
+	// Инкремент счетчика (в секунде 30 счетчиков)
+	TimeCounter++;
+	
+	// Если набралось 30 счетчиков то..
+	if (TimeCounter == 30)
+	{
+		TimeCurrent[2]++;                      // Инкремент секунды         
+		TimeCounter = 0;	
+
+		if (TimeCurrent[2] >= 60)              // Если набралось 60 секунд то..
+		{
+			TimeCurrent[1]++;                  // Инкремент минуты 
+			TimeCurrent[2] = 0;
+				
+				if (TimeCurrent[1] >= 60)      // Если набралось 60 минут то..
+				{
+					TimeCurrent[0]++;          // Инкремент часа
+					TimeCurrent[1] = 0;
+				}
+				
+					if (TimeCurrent[0] >= 24)  // Если набралось 24 часа то..
+					{
+						TimeCurrent[0] = 0;
+						TimeCurrent[1] = 0;
+						TimeCurrent[2] = 0;
+					}			
+		}
+		
+		// Расчет данных для показа чисел  - сделай это проще
+		for (i = 0; i <= 2; i++)
+		{
+			TimeDisplay[i*2] = TimeCurrent[i] % 10;
+			TimeDisplay[i*2+1] = (TimeCurrent[i] - TimeDisplay[i*2]) / 10;			
+		}
+		
+		// Определение четности
+    	if (TimeCurrent[2] % 2 == 0)
+    	{
+			TimeParity = 1;
+    	}
+    	else
+		{
+			TimeParity = 0;
+		}
+	}
+}

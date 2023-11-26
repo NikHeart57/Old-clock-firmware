@@ -1,0 +1,206 @@
+#define F_CPU 7372800
+
+#include <avr/io.h>
+#include <util/delay.h>     // Библиотека задежек _delay_ms(10)
+#include <avr/interrupt.h>  // Библиотека векторов прерываний
+#include <stdio.h>          // Библиотека rand
+#include <stdlib.h>         // Библиотека rand
+
+unsigned char i;
+unsigned char j;
+
+unsigned char PushPA0;
+unsigned char FlagPA0;
+unsigned char HeatPushPA0;
+unsigned char HeatFlagPA0;
+unsigned char HeatPA0;
+
+unsigned char PushPA1;
+unsigned char FlagPA1;
+
+
+unsigned char TimeCounter;
+unsigned char TimeParity;
+unsigned char TimeCurrent[3] = {0, 01, 13};            // sec, min, hour                                 // Число элементов - три [3],   но номера элементов 0, 1, 2
+unsigned char TimeDisplay[6] = {0, 0, 0, 0, 0, 0};     // sec_0, sec_1, min_0, min_1, hour_0, hour_1     // Число элементов - шесть [6], но номера элементов 0, 1, ... 6
+
+
+void setup()
+{
+	// Настройка входа(0) выхода(1)
+	DDRA  |= (0 << PA0)|(0 << PA1)|(0 << PA2);                        // Кнопки
+	PORTA |= (1 << PA0)|(1 << PA1)|(1 << PA2);
+	DDRB  |= (1 << PB0)|(1 << PB1)|(1 << PB2)|(1 << PB3)|(1 << PB4);  // PB0-PB4 - Оптопары
+	DDRD  |= (1 << PD0)|(1 << PD1)|(1 << PD2)|(1 << PD3)|(1 << PD4);  // PD0-PD3 - Дешифратор;  PD4 - OC1B PWM
+	DDRC  |= (1 << PC0)|(1 << PC1)|(1 << PC2)|(1 << PC3)|(1 << PC4)|(1 << PC5)|(1 << PC6)|(1 << PC7);
+	
+	// Настойка таймера 0 (Часы)
+	sei();
+	TCCR0 |= (0 << FOC0) |(1  << WGM01)|(0 << WGM00)|(0 << COM01)|(0 << COM00)|(1 << CS02)|(0 << CS01)|(1 << CS00); // WGM = 10 - CTC mode / COM = 00 - пин откл / CS = 101 - Прескелер 1024
+	TIMSK |= (1 << OCIE0)|(0 << TOIE0); // OCIE0 = 1 - разрешает вызов прерывания TIMER0_COMP_vect
+	OCR0 = 239; // Число прерывания
+	
+	// Настройа таймера 1 (PWM)
+	sei();
+	TCCR1A |= (0 << COM1A1)|(0 << COM1A0)|(1 << COM1B1)|(0 << COM1B0)|(0 << FOC1A)|(0 << FOC1B)|(0 << WGM11)|(0 << WGM10);
+	TCCR1B |= (0 << ICNC1) |(0 << ICES1) |(1 << WGM13) |(0 << WGM12) |(0 << CS12) |(0 << CS11) |(1 << CS10);
+	ICR1 = 75;  // Верхнее значение, до которого идет счет - 75
+	OCR1B = 73; // Регистр сравнения, при совпадении с которым меняется состояние вывода OC1B - 73
+}
+
+void IndicationMode0()
+{
+	PORTB = TimeParity << 4;
+	_delay_us(30);
+	
+	for (i = 0; i <= 3; i++)
+	{
+		PORTD = TimeDisplay[i+2];	 // Добавить +2 Если надо показывать минуты и часы
+		PORTB = (1 << i);
+		_delay_us(5);
+		PORTB = (0 << i);
+		_delay_us(500);
+	}
+}
+
+
+int main(void)
+{
+	setup();
+	
+	while (1)
+	{
+		IndicationMode0();
+		
+		if (FlagPA1 == 0)
+		{
+			PORTC = FlagPA0;
+		}
+
+		if (FlagPA1 == 1)
+		{
+			PORTC = HeatFlagPA0;
+		}
+
+		// Кнопка 
+		if (!(PINA & (1 << PINA0)))
+		{
+			// Кнопку нажимают
+			// Паралельно при нажатии начинается нагрев кнопки
+			if (HeatPA0 < 200)
+			{
+				HeatPA0++;
+				_delay_ms(5);
+			}
+			
+			// Код горячей кнопки
+			if (HeatPA0 == 200 && HeatPushPA0 == 0)
+			{
+				HeatFlagPA0++;
+				FlagPA0--;
+				HeatPushPA0 = 1;
+
+			}			
+			
+										
+			if (PushPA0 == 0)
+			{
+				PushPA0 = 10;
+				// Код холодной кнопки
+				if (HeatPA0 < 200)
+				{
+					FlagPA0++;								
+				}	
+			}	
+		}
+		
+		// Кнопку отпустили
+		else
+		{					 
+			if (PushPA0 > 0)
+			{
+				PushPA0--;
+				HeatPushPA0 = 0;
+				HeatPA0 = 0;
+			}
+		}
+    
+	
+		
+		// Кнопка PA1
+		if (!(PINA & (1 << PINA1)))
+		{
+			if (PushPA1 == 0)
+			{
+				PushPA1 = 10;
+				// Код
+				if (FlagPA1 == 0)
+				{
+					FlagPA1 = 1;
+				}
+				else
+				{
+					FlagPA1 = 0;	
+				}
+				// Конец кода
+			}
+		}
+		else
+		{
+			if (PushPA1 > 0)
+			{
+				PushPA1--;
+			}
+		}		
+	}
+}
+
+
+ISR(TIMER0_COMP_vect)
+{
+	// Инкремент счетчика (в секунде 30 счетчиков)
+	TimeCounter++;
+	
+	// Если набралось 30 счетчиков то..
+	if (TimeCounter == 30)
+	{
+		TimeCurrent[0]++;                      // Инкремент секунды         
+		TimeCounter = 0;	
+
+		if (TimeCurrent[0] >= 60)              // Если набралось 60 секунд то..
+		{
+			TimeCurrent[1]++;                  // Инкремент минуты 
+			TimeCurrent[0] = 0;
+				
+				if (TimeCurrent[1] >= 60)      // Если набралось 60 минут то..
+				{
+					TimeCurrent[2]++;          // Инкремент часа
+					TimeCurrent[1] = 0;
+				}
+				
+					if (TimeCurrent[2] >= 24)  // Если набралось 24 часа то..
+					{
+						TimeCurrent[0] = 0;
+						TimeCurrent[1] = 0;
+						TimeCurrent[2] = 0;
+					}			
+		}
+		
+		// Расчет данных для показа чисел
+		for (j = 0; j <= 2; j++)
+		{
+			TimeDisplay[j*2] = TimeCurrent[j] % 10;
+			TimeDisplay[j*2+1] = (TimeCurrent[j] - TimeDisplay[j*2]) / 10;			
+		}
+		
+		// Определение четности
+    	if (TimeCurrent[0] % 2 == 0)
+    	{
+			TimeParity = 1;
+    	}
+    	else
+		{
+			TimeParity = 0;
+		}
+	}
+}
